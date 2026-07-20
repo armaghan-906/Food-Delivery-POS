@@ -6,8 +6,8 @@ Short records of choices that are expensive to reverse.
 
 ## ADR-001: Money is integer pence
 
-**Decision.** Every monetary value in every layer — SQLite, MySQL, TypeScript, JSON on the
-wire — is a signed integer in pence. There are no floats and no decimal strings in the
+**Decision.** Every monetary value in every layer — SQLite, PostgreSQL, TypeScript, JSON on
+the wire — is a signed integer in pence. There are no floats and no decimal strings in the
 money path.
 
 **Why.** `0.1 + 0.2 !== 0.3`. A till that rounds differently from the cloud produces
@@ -108,3 +108,44 @@ it needs to reset daily and be unique per site, so it cannot double as the distr
 **Consequence.** Allocation is a local SQLite transaction; it never blocks on the network.
 Two sites will both have order `#42` on the same day, which is correct — the pair
 `(location_id, business_date, daily_number)` is the unique key.
+
+---
+
+## ADR-008: PostgreSQL 16 for the central database (supersedes MySQL 8)
+
+**Decision.** The cloud database is PostgreSQL 16, not MySQL 8. Prisma remains the ORM.
+The local per-till database is unaffected — it stays SQLite.
+
+**Why.** This system is an event store with a reporting layer bolted on, and Postgres is
+materially better at both:
+
+- **JSONB.** Order event payloads are JSON. Postgres stores them in a binary form that can
+  be indexed with GIN, so "every order containing menu item X" or "all events where the
+  payload names staff member Y" are index-backed queries. MySQL's `JSON` type cannot be
+  indexed directly — it needs generated columns per query shape, decided in advance.
+  For an event log whose payload shape varies by event type, that is the wrong trade.
+- **Partial indexes.** The sync ingest table is overwhelmingly rows that are already
+  processed. `CREATE INDEX ... WHERE status = 'pending'` indexes only the working set.
+  MySQL has no equivalent.
+- **Transactional DDL.** A migration that fails midway rolls back completely, including the
+  schema changes. MySQL commits DDL implicitly, so a failed migration leaves the schema
+  half-applied — considerably worse on a production database holding VAT records.
+- **Native partitioning by range.** Order events are time-series data that grows forever
+  and is queried mostly at the recent end. Partitioning by month makes retention and
+  archival a metadata operation instead of a mass delete.
+- **Exclusion constraints and richer types.** Useful later for table bookings (no
+  overlapping reservations on one table) — a constraint Postgres enforces natively.
+
+**Trade-offs accepted.**
+
+- Postgres handles connections more expensively than MySQL. At multi-site scale the API
+  will need PgBouncer or Prisma's connection pool tuned; this is a known, solved problem
+  but it is real operational work MySQL would defer.
+- Some budget UK hosting offers MySQL by default and Postgres as an extra. Irrelevant for a
+  managed deployment (RDS, Cloud SQL, Supabase, Neon all offer both), but worth naming.
+- If the team already had deep MySQL operational experience, that familiarity would
+  outweigh most of the above. It does not.
+
+**Consequence.** No code changes — the backend was unimplemented when this was decided.
+Had order events already been written to MySQL, this migration would have meant moving
+the VAT audit trail between engines, which is exactly the kind of change worth avoiding.

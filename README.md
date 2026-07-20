@@ -29,7 +29,7 @@ system treats the network as an optimisation, not a dependency:
 | Till app | Electron + React + TypeScript + Vite |
 | UI | Tailwind CSS — touch-first, large tap targets |
 | Local DB | SQLite via better-sqlite3 + Drizzle — source of truth for live operations |
-| Cloud DB | MySQL 8 + Prisma — source of truth for everything, over time |
+| Cloud DB | PostgreSQL 16 + Prisma — source of truth for everything, over time |
 | Cloud API | NestJS (REST for sync, WebSocket for live updates) |
 | State | Zustand |
 | Monorepo | pnpm workspaces |
