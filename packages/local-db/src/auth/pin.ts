@@ -1,7 +1,23 @@
-import { scrypt, randomBytes, timingSafeEqual } from 'node:crypto';
-import { promisify } from 'node:util';
+import { scrypt, randomBytes, timingSafeEqual, type ScryptOptions } from 'node:crypto';
 
-const scryptAsync = promisify(scrypt);
+/**
+ * `promisify(scrypt)` collapses to the 3-argument overload and drops the
+ * options parameter, so the cost settings below would be silently ignored by
+ * the type checker. Wrapping it by hand keeps them typed.
+ */
+function scryptAsync(
+  password: string,
+  salt: Buffer,
+  keylen: number,
+  options: ScryptOptions,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, keylen, options, (err, derived) => {
+      if (err) reject(err);
+      else resolve(derived);
+    });
+  });
+}
 
 /**
  * PIN hashing using Node's built-in scrypt.
@@ -43,7 +59,7 @@ export async function hashPin(pin: string): Promise<string> {
   assertValidPinFormat(pin);
 
   const salt = randomBytes(SALT_LENGTH);
-  const derived = (await scryptAsync(pin, salt, KEY_LENGTH, SCRYPT_PARAMS)) as Buffer;
+  const derived = await scryptAsync(pin, salt, KEY_LENGTH, SCRYPT_PARAMS);
 
   const { N, r, p } = SCRYPT_PARAMS;
   return `scrypt$${N}$${r}$${p}$${salt.toString('base64')}$${derived.toString('base64')}`;
@@ -70,12 +86,12 @@ export async function verifyPin(pin: string, storedHash: string): Promise<boolea
     const salt = Buffer.from(saltB64!, 'base64');
     const expected = Buffer.from(hashB64!, 'base64');
 
-    const derived = (await scryptAsync(pin, salt, expected.length, {
+    const derived = await scryptAsync(pin, salt, expected.length, {
       N,
       r,
       p,
       maxmem: 64 * 1024 * 1024,
-    })) as Buffer;
+    });
 
     // Length check first — timingSafeEqual throws on mismatched lengths.
     if (derived.length !== expected.length) return false;
