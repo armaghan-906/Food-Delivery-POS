@@ -1,6 +1,12 @@
 import { app, BrowserWindow, ipcMain, session } from 'electron';
 import path from 'node:path';
-import { initialiseDatabase, currentVersion, type PosDatabase } from '@pos/local-db';
+import {
+  initialiseDatabase,
+  currentVersion,
+  seedDatabase,
+  SEED_STAFF,
+  type PosDatabase,
+} from '@pos/local-db';
 import type Database from 'better-sqlite3';
 import { IPC } from '../shared/ipc-contract.js';
 import type { DbStatus } from '../shared/ipc-contract.js';
@@ -22,7 +28,7 @@ function databasePath(): string {
   return path.join(app.getPath('userData'), 'till.sqlite');
 }
 
-function openDb(): void {
+async function openDb(): Promise<void> {
   const dbPath = databasePath();
   const result = initialiseDatabase({ path: dbPath });
   db = result.db;
@@ -32,6 +38,24 @@ function openDb(): void {
     console.log(`[db] applied migrations: ${result.applied.join(', ')}`);
   }
   console.log(`[db] ready at ${dbPath} (schema v${currentVersion(result.sqlite)})`);
+
+  // Dev only. In production, menu and staff arrive by downward sync from
+  // central and this never runs.
+  if (!app.isPackaged) {
+    const seed = await seedDatabase(result.sqlite);
+    if (seed.skipped) {
+      console.log('[seed] menu already present — skipped');
+    } else {
+      console.log(
+        `[seed] ${seed.categories} categories, ${seed.items} items, ` +
+          `${seed.modifiers} modifiers, ${seed.allergenTags} allergen tags`,
+      );
+      console.log('[seed] dev logins (development build only):');
+      for (const member of SEED_STAFF) {
+        console.log(`         ${member.pin}  ${member.name} (${member.role})`);
+      }
+    }
+  }
 }
 
 /**
@@ -150,8 +174,8 @@ function registerIpcHandlers(): void {
   }));
 }
 
-void app.whenReady().then(() => {
-  openDb();
+void app.whenReady().then(async () => {
+  await openDb();
   applyContentSecurityPolicy();
   registerIpcHandlers();
   createWindow();

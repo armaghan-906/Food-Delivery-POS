@@ -2,6 +2,7 @@ export { openDatabase, schema, type PosDatabase, type OpenDbOptions } from './cl
 export { runMigrations, currentVersion, type Migration } from './migrate.js';
 export { MIGRATIONS } from './migrations/index.js';
 export * from './auth/index.js';
+export * from './seed/index.js';
 
 import { openDatabase, type OpenDbOptions, type PosDatabase } from './client.js';
 import { runMigrations } from './migrate.js';
