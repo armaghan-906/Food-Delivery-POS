@@ -76,6 +76,19 @@ importers:
         specifier: ^0.14.6
         version: 0.14.7
 
+  packages/core:
+    dependencies:
+      '@pos/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.4
+        version: 3.2.7(@types/node@26.1.1)(jiti@1.21.7)
+
   packages/local-db:
     dependencies:
       '@pos/types':
