@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    /* A till is a kiosk. Text selection and the context menu are only ever
+       accidental taps during service. */
+    -webkit-user-select: none;
+    user-select: none;
+    overscroll-behavior: none;
+  }
+
+  /* Inputs are the exception — staff genuinely need to select in those. */
+  input,
+  textarea {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
