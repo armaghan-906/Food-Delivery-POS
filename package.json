@@ -1,0 +1,21 @@
+{
+  "name": "pos-system",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Offline-first cloud-connected POS for UK food service",
+  "engines": {
+    "node": ">=20.11.0",
+    "pnpm": ">=10"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "terminal": "pnpm --filter @pos/terminal dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

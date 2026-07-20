@@ -1,0 +1,10 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# better-sqlite3 is a native module and must be compiled against Electron's
+# ABI, not Node's. pnpm blocks build scripts by default from v10.
+onlyBuiltDependencies:
+  - better-sqlite3
+  - electron
+  - esbuild
