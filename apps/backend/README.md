@@ -3,7 +3,15 @@
 NestJS cloud API. Receives order events from tills, replays them into PostgreSQL 16 via
 Prisma, and serves reference data downward.
 
-**Status:** not yet implemented — Phase 1 sync skeleton is next.
+**Status:** Phase-0 scaffold in place — NestJS app boots with `GET /health` and an
+idempotent `POST /sync/push`, plus the full Prisma schema (data model below). Event
+projection into read-model tables, auth/RBAC and the live WebSocket gateway are next.
+
+```bash
+cp .env.example .env                          # set DATABASE_URL to Postgres 16
+pnpm --filter @pos/backend prisma:generate    # also runs before typecheck/build
+pnpm backend                                   # start:dev on :4000
+```
 
 ## Responsibilities
 

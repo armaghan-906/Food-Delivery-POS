@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@pos/core": "workspace:*",
     "@pos/local-db": "workspace:*",
     "@pos/types": "workspace:*",
     "react": "^19.0.0",

@@ -4,12 +4,65 @@ import {
   initialiseDatabase,
   currentVersion,
   seedDatabase,
+  seedTables,
   SEED_STAFF,
+  listActiveStaff,
+  getStaffAuth,
+  verifyPin,
+  listTables,
+  setTableStatus,
+  getOpenShift,
+  openShift,
+  closeShift,
+  SEED_LOCATION,
+  type ShiftRow,
   type PosDatabase,
 } from '@pos/local-db';
+import { randomUUID } from 'node:crypto';
+import {
+  INITIAL_LOCKOUT,
+  isLockedOut,
+  secondsRemaining,
+  recordFailure,
+  recordSuccess,
+  attemptsRemaining,
+  can,
+  type LockoutState,
+  type Permission,
+} from '@pos/core';
 import type Database from 'better-sqlite3';
 import { IPC } from '../shared/ipc-contract.js';
-import type { DbStatus } from '../shared/ipc-contract.js';
+import type {
+  ClockDirection,
+  DbStatus,
+  OverridePermission,
+  OverrideResult,
+  ShiftInfo,
+  StaffSummary,
+  TableInfo,
+  TableStatus,
+  VerifyPinResult,
+} from '../shared/ipc-contract.js';
+
+const DEVICE_ID = 'till-01';
+const toShiftInfo = (s: ShiftRow): ShiftInfo => ({
+  id: s.id,
+  businessDate: s.businessDate,
+  openingFloatP: s.openingFloatP,
+  status: s.status,
+  countedCashP: s.countedCashP,
+  expectedCashP: s.expectedCashP,
+  varianceP: s.varianceP,
+  openedAt: s.openedAt,
+  closedAt: s.closedAt,
+});
+
+/**
+ * PIN-attempt lockout, held in memory per staff id. In-memory is deliberate for
+ * now: a lockout that resets on app restart is acceptable, and it keeps the
+ * throttle off the sync path. Persisting it is a later hardening step.
+ */
+const lockouts = new Map<string, LockoutState>();
 
 // This file is bundled to CJS (see vite.config.ts), so __dirname is provided
 // by the module wrapper — do not switch to import.meta.url here.
@@ -55,6 +108,11 @@ async function openDb(): Promise<void> {
         console.log(`         ${member.pin}  ${member.name} (${member.role})`);
       }
     }
+
+    // Floor-plan tables seed independently (idempotent), so databases seeded
+    // before the floor plan existed still get their tables.
+    const tables = seedTables(result.sqlite);
+    if (!tables.skipped) console.log(`[seed] ${tables.tables} dining tables`);
   }
 }
 
@@ -172,6 +230,111 @@ function registerIpcHandlers(): void {
     electron: process.versions.electron,
     node: process.versions.node,
   }));
+
+  ipcMain.handle(IPC.AUTH_LIST_STAFF, (): StaffSummary[] => {
+    if (!sqlite) return [];
+    return listActiveStaff(sqlite);
+  });
+
+  ipcMain.handle(
+    IPC.AUTH_VERIFY_PIN,
+    async (_event, staffId: string, pin: string): Promise<VerifyPinResult> => {
+      const now = new Date();
+      const state = lockouts.get(staffId) ?? INITIAL_LOCKOUT;
+
+      // Locked accounts short-circuit — never even hash the PIN.
+      if (isLockedOut(state, now)) {
+        return { ok: false, lockedOut: true, secondsRemaining: secondsRemaining(state, now) };
+      }
+
+      const row = sqlite ? getStaffAuth(sqlite, staffId) : undefined;
+      // Unknown staff is treated exactly like a wrong PIN — same shape, same
+      // attempt cost — so the screen can't be used to enumerate valid ids.
+      const valid = row ? await verifyPin(pin, row.pinHash) : false;
+
+      if (!valid) {
+        const next = recordFailure(state, now);
+        lockouts.set(staffId, next);
+        return isLockedOut(next, now)
+          ? { ok: false, lockedOut: true, secondsRemaining: secondsRemaining(next, now) }
+          : { ok: false, lockedOut: false, attemptsRemaining: attemptsRemaining(next) };
+      }
+
+      lockouts.set(staffId, recordSuccess());
+      return { ok: true, staff: { id: row!.id, name: row!.name, role: row!.role } };
+    },
+  );
+
+  ipcMain.handle(
+    IPC.CLOCK_PUNCH,
+    (_event, staffId: string, direction: ClockDirection): { ok: true } => {
+      // Functional today as an audited log line; persistent clock entries land
+      // with the shift / cash-up work (screen 1.12).
+      console.log(`[clock] ${staffId} clocked ${direction} at ${new Date().toISOString()}`);
+      return { ok: true };
+    },
+  );
+
+  ipcMain.handle(
+    IPC.AUTH_AUTHORIZE_OVERRIDE,
+    async (_event, permission: OverridePermission, pin: string): Promise<OverrideResult> => {
+      if (!sqlite) return { ok: false };
+      // Check the PIN against every staff member who holds the permission. The
+      // first authorised match wins; a wrong PIN or an unauthorised staff fails.
+      for (const summary of listActiveStaff(sqlite)) {
+        if (!can(summary.role, permission as Permission)) continue;
+        const row = getStaffAuth(sqlite, summary.id);
+        if (row && (await verifyPin(pin, row.pinHash))) {
+          return { ok: true, staff: { id: row.id, name: row.name, role: row.role } };
+        }
+      }
+      return { ok: false };
+    },
+  );
+
+  ipcMain.handle(IPC.TABLES_LIST, (): TableInfo[] => {
+    return sqlite ? (listTables(sqlite) as TableInfo[]) : [];
+  });
+
+  ipcMain.handle(
+    IPC.TABLE_SET_STATUS,
+    (_event, tableId: string, status: TableStatus): TableInfo | null => {
+      if (!sqlite) return null;
+      return (setTableStatus(sqlite, tableId, status, new Date().toISOString()) as TableInfo) ?? null;
+    },
+  );
+
+  ipcMain.handle(IPC.SHIFT_GET_OR_OPEN, (_event, openingFloatP: number): ShiftInfo | null => {
+    if (!sqlite) return null;
+    let shift = getOpenShift(sqlite, DEVICE_ID);
+    if (!shift) {
+      shift = openShift(sqlite, {
+        id: randomUUID(),
+        locationId: SEED_LOCATION.id,
+        deviceId: DEVICE_ID,
+        businessDate: new Date().toISOString().slice(0, 10),
+        openedByStaffId: 'shift-opener',
+        openingFloatP,
+        now: new Date().toISOString(),
+      });
+    }
+    return toShiftInfo(shift);
+  });
+
+  ipcMain.handle(
+    IPC.SHIFT_CLOSE,
+    (_event, shiftId: string, countedCashP: number, expectedCashP: number): ShiftInfo | null => {
+      if (!sqlite) return null;
+      const row = closeShift(sqlite, {
+        shiftId,
+        closedByStaffId: 'shift-closer',
+        countedCashP,
+        expectedCashP,
+        now: new Date().toISOString(),
+      });
+      return row ? toShiftInfo(row) : null;
+    },
+  );
 }
 
 void app.whenReady().then(async () => {

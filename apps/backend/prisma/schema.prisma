@@ -1,0 +1,613 @@
+// Central database schema — PostgreSQL 16 (see docs/decisions.md ADR-008).
+//
+// The central DB is the source of truth for everything, over time. The till's
+// SQLite is the source of truth for "now" in one restaurant. Orders arrive as an
+// append-only event log (OrderEvent) and are projected into read-model tables.
+//
+// Conventions:
+//  - Ids are client-generatable UUIDs so offline terminals never collide.
+//  - Money is integer pence (Int). VAT rates are basis points (Int, 2000 = 20%).
+//  - Never store raw card data (PCI-DSS) — payments hold provider tokens only.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum StaffRole {
+  server
+  supervisor
+  manager
+  admin
+}
+
+enum OrderChannel {
+  dine_in
+  takeaway
+  delivery
+}
+
+enum OrderStatus {
+  draft
+  placed
+  paid
+  refunded
+  cancelled
+}
+
+enum PaymentMethod {
+  cash
+  card
+  voucher
+}
+
+enum PaymentStatus {
+  pending
+  captured
+  failed
+  refunded
+}
+
+enum AllergenPresence {
+  contains
+  may_contain
+}
+
+// The 14 UK statutory allergens (Natasha's Law). Do not extend or reorder.
+enum Allergen {
+  celery
+  gluten
+  crustaceans
+  eggs
+  fish
+  lupin
+  milk
+  molluscs
+  mustard
+  nuts
+  peanuts
+  sesame
+  soybeans
+  sulphites
+}
+
+enum TableStatus {
+  available
+  seated
+  bill_requested
+  dirty
+}
+
+enum DeliveryPlatform {
+  deliveroo
+  uber_eats
+  just_eat
+  direct
+}
+
+enum DeviceType {
+  till
+  kds
+  printer
+  card_terminal
+  cash_drawer
+}
+
+enum SyncEntity {
+  order_event
+  payment
+  stock_movement
+  shift
+}
+
+enum PurchaseOrderStatus {
+  draft
+  sent
+  received
+  cancelled
+}
+
+// ---------------------------------------------------------------------------
+// Org / people
+// ---------------------------------------------------------------------------
+
+model Location {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  postcode     String?
+  vatNumber    String?
+  settings     Json     @default("{}")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  staff          StaffLocation[]
+  categories     MenuCategory[]
+  orders         Order[]
+  tables         DiningTable[]
+  floorAreas     FloorArea[]
+  inventoryItems InventoryItem[]
+  devices        Device[]
+  promotions     PromotionLocation[]
+  clockEntries   ClockEntry[]
+
+  @@map("locations")
+}
+
+model Staff {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  pinHash   String
+  role      StaffRole
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  locations    StaffLocation[]
+  clockEntries ClockEntry[]
+  orders       Order[]
+  auditLogs    AuditLog[]
+
+  @@map("staff")
+}
+
+// Staff can work across sites (multi-site chain) — explicit join.
+model StaffLocation {
+  staffId    String   @db.Uuid
+  locationId String   @db.Uuid
+  staff      Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@id([staffId, locationId])
+  @@map("staff_locations")
+}
+
+model ClockEntry {
+  id         String    @id @default(uuid()) @db.Uuid
+  staffId    String    @db.Uuid
+  locationId String    @db.Uuid
+  clockIn    DateTime
+  clockOut   DateTime?
+  staff      Staff     @relation(fields: [staffId], references: [id])
+  location   Location  @relation(fields: [locationId], references: [id])
+
+  @@index([locationId, clockIn])
+  @@map("clock_entries")
+}
+
+// ---------------------------------------------------------------------------
+// Menu
+// ---------------------------------------------------------------------------
+
+model MenuCategory {
+  id         String   @id @default(uuid()) @db.Uuid
+  locationId String?  @db.Uuid
+  name       String
+  colour     String?
+  sortOrder  Int      @default(0)
+  isActive   Boolean  @default(true)
+  updatedAt  DateTime @updatedAt
+  location   Location? @relation(fields: [locationId], references: [id])
+  items      MenuItem[]
+
+  @@map("menu_categories")
+}
+
+model MenuItem {
+  id                  String   @id @default(uuid()) @db.Uuid
+  categoryId          String   @db.Uuid
+  name                String
+  description         String?
+  priceP              Int
+  vatRateEatInBps     Int
+  vatRateTakeawayBps  Int
+  isHotFood           Boolean  @default(false)
+  imageUrl            String?
+  isAvailable         Boolean  @default(true)
+  sortOrder           Int      @default(0)
+  updatedAt           DateTime @updatedAt
+
+  category       MenuCategory            @relation(fields: [categoryId], references: [id])
+  allergens      MenuItemAllergen[]
+  modifierGroups MenuItemModifierGroup[]
+
+  @@index([categoryId])
+  @@map("menu_items")
+}
+
+model MenuItemAllergen {
+  menuItemId String           @db.Uuid
+  allergen   Allergen
+  presence   AllergenPresence
+  menuItem   MenuItem         @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@id([menuItemId, allergen])
+  @@map("menu_item_allergens")
+}
+
+model ModifierGroup {
+  id            String   @id @default(uuid()) @db.Uuid
+  name          String
+  minSelections Int      @default(0)
+  maxSelections Int      @default(1)
+  sortOrder     Int      @default(0)
+  updatedAt     DateTime @updatedAt
+
+  modifiers Modifier[]
+  menuItems MenuItemModifierGroup[]
+
+  @@map("modifier_groups")
+}
+
+model Modifier {
+  id          String   @id @default(uuid()) @db.Uuid
+  groupId     String   @db.Uuid
+  name        String
+  priceDeltaP Int      @default(0)
+  makesHot    Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  updatedAt   DateTime @updatedAt
+
+  group     ModifierGroup      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  allergens ModifierAllergen[]
+
+  @@index([groupId])
+  @@map("modifiers")
+}
+
+model ModifierAllergen {
+  modifierId String           @db.Uuid
+  allergen   Allergen
+  presence   AllergenPresence
+  modifier   Modifier         @relation(fields: [modifierId], references: [id], onDelete: Cascade)
+
+  @@id([modifierId, allergen])
+  @@map("modifier_allergens")
+}
+
+model MenuItemModifierGroup {
+  menuItemId      String        @db.Uuid
+  modifierGroupId String        @db.Uuid
+  sortOrder       Int           @default(0)
+  menuItem        MenuItem      @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  modifierGroup   ModifierGroup @relation(fields: [modifierGroupId], references: [id], onDelete: Cascade)
+
+  @@id([menuItemId, modifierGroupId])
+  @@map("menu_item_modifier_groups")
+}
+
+// ---------------------------------------------------------------------------
+// Orders — event-sourced. OrderEvent is append-only; the rest are projections.
+// ---------------------------------------------------------------------------
+
+model Order {
+  id           String       @id @default(uuid()) @db.Uuid
+  locationId   String       @db.Uuid
+  staffId      String?      @db.Uuid
+  channel      OrderChannel
+  status       OrderStatus  @default(draft)
+  tableId      String?      @db.Uuid
+  dailyNumber  Int?
+  businessDate String? // YYYY-MM-DD trading day
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  location Location      @relation(fields: [locationId], references: [id])
+  staff    Staff?        @relation(fields: [staffId], references: [id])
+  table    DiningTable?  @relation(fields: [tableId], references: [id])
+  events   OrderEvent[]
+  lines    OrderLine[]
+  payments Payment[]
+  refunds  Refund[]
+
+  @@index([locationId, createdAt])
+  @@map("orders")
+}
+
+model OrderEvent {
+  id        String   @id @db.Uuid
+  orderId   String   @db.Uuid
+  type      String
+  payload   Json
+  deviceId  String
+  sequence  Int
+  createdAt DateTime @default(now())
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  // Replay order is (deviceId, sequence); ties broken by deviceId (ADR-003).
+  @@unique([deviceId, sequence])
+  @@index([orderId])
+  @@map("order_events")
+}
+
+model OrderLine {
+  id         String   @id @default(uuid()) @db.Uuid
+  orderId    String   @db.Uuid
+  menuItemId String?  @db.Uuid
+  name       String
+  quantity   Int
+  unitPriceP Int
+  vatRateBps Int
+  lineTotalP Int
+  modifiers  Json     @default("[]")
+  isVoided   Boolean  @default(false)
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_lines")
+}
+
+model Payment {
+  id          String        @id @default(uuid()) @db.Uuid
+  orderId     String        @db.Uuid
+  method      PaymentMethod
+  status      PaymentStatus @default(captured)
+  amountP     Int
+  tipP        Int           @default(0)
+  tenderedP   Int?
+  // Provider token/reference ONLY — never a card number (PCI-DSS).
+  providerRef String?
+  createdAt   DateTime      @default(now())
+  order       Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("payments")
+}
+
+model Refund {
+  id         String   @id @default(uuid()) @db.Uuid
+  orderId    String   @db.Uuid
+  amountP    Int
+  reason     String
+  staffId    String?  @db.Uuid
+  approvedBy String?  @db.Uuid
+  createdAt  DateTime @default(now())
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("refunds")
+}
+
+// ---------------------------------------------------------------------------
+// Floor plan
+// ---------------------------------------------------------------------------
+
+model FloorArea {
+  id         String        @id @default(uuid()) @db.Uuid
+  locationId String        @db.Uuid
+  name       String
+  sortOrder  Int           @default(0)
+  location   Location      @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  tables     DiningTable[]
+
+  @@map("floor_areas")
+}
+
+model DiningTable {
+  id         String      @id @default(uuid()) @db.Uuid
+  locationId String      @db.Uuid
+  areaId     String?     @db.Uuid
+  number     String
+  seats      Int         @default(2)
+  status     TableStatus @default(available)
+  location   Location    @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  area       FloorArea?  @relation(fields: [areaId], references: [id])
+  orders     Order[]
+
+  @@index([locationId])
+  @@map("dining_tables")
+}
+
+// ---------------------------------------------------------------------------
+// Inventory & suppliers
+// ---------------------------------------------------------------------------
+
+model InventoryItem {
+  id            String          @id @default(uuid()) @db.Uuid
+  locationId    String          @db.Uuid
+  name          String
+  unit          String
+  level         Float           @default(0)
+  lowThreshold  Float           @default(0)
+  updatedAt     DateTime        @updatedAt
+  location      Location        @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  movements     StockMovement[]
+  poLines       PurchaseOrderLine[]
+
+  @@index([locationId])
+  @@map("inventory_items")
+}
+
+model StockMovement {
+  id        String        @id @default(uuid()) @db.Uuid
+  itemId    String        @db.Uuid
+  delta     Float
+  reason    String
+  orderId   String?       @db.Uuid
+  createdAt DateTime      @default(now())
+  item      InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId, createdAt])
+  @@map("stock_movements")
+}
+
+model Supplier {
+  id             String          @id @default(uuid()) @db.Uuid
+  name           String
+  contactEmail   String?
+  contactPhone   String?
+  createdAt      DateTime        @default(now())
+  purchaseOrders PurchaseOrder[]
+
+  @@map("suppliers")
+}
+
+model PurchaseOrder {
+  id         String              @id @default(uuid()) @db.Uuid
+  supplierId String              @db.Uuid
+  locationId String              @db.Uuid
+  status     PurchaseOrderStatus @default(draft)
+  createdAt  DateTime            @default(now())
+  supplier   Supplier            @relation(fields: [supplierId], references: [id])
+  lines      PurchaseOrderLine[]
+
+  @@index([supplierId])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id              String        @id @default(uuid()) @db.Uuid
+  purchaseOrderId String        @db.Uuid
+  inventoryItemId String        @db.Uuid
+  quantity        Float
+  unitCostP       Int
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
+
+  @@map("purchase_order_lines")
+}
+
+// ---------------------------------------------------------------------------
+// CRM, loyalty, promotions
+// ---------------------------------------------------------------------------
+
+model Customer {
+  id            String               @id @default(uuid()) @db.Uuid
+  name          String
+  email         String?              @unique
+  phone         String?
+  loyaltyPoints Int                  @default(0)
+  // GDPR: consent + deletion tracked here.
+  consentedAt   DateTime?
+  createdAt     DateTime             @default(now())
+  transactions  LoyaltyTransaction[]
+
+  @@map("customers")
+}
+
+model LoyaltyProgram {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  pointsPerGbp Int     @default(1)
+  isActive    Boolean  @default(true)
+  rewards     Reward[]
+
+  @@map("loyalty_programs")
+}
+
+model Reward {
+  id             String         @id @default(uuid()) @db.Uuid
+  programId      String         @db.Uuid
+  name           String
+  pointsCost     Int
+  program        LoyaltyProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+
+  @@map("rewards")
+}
+
+model LoyaltyTransaction {
+  id         String   @id @default(uuid()) @db.Uuid
+  customerId String   @db.Uuid
+  pointsDelta Int
+  reason     String
+  createdAt  DateTime @default(now())
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@map("loyalty_transactions")
+}
+
+model Promotion {
+  id         String              @id @default(uuid()) @db.Uuid
+  name       String
+  type       String // percentage | fixed | bogof ...
+  valueBps   Int?
+  valueP     Int?
+  conditions Json                @default("{}")
+  channels   OrderChannel[]
+  validFrom  DateTime?
+  validTo    DateTime?
+  isActive   Boolean             @default(true)
+  locations  PromotionLocation[]
+
+  @@map("promotions")
+}
+
+model PromotionLocation {
+  promotionId String    @db.Uuid
+  locationId  String    @db.Uuid
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  location    Location  @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@id([promotionId, locationId])
+  @@map("promotion_locations")
+}
+
+// ---------------------------------------------------------------------------
+// Delivery, devices, sync, audit
+// ---------------------------------------------------------------------------
+
+model DeliveryOrder {
+  id            String           @id @default(uuid()) @db.Uuid
+  platform      DeliveryPlatform
+  externalId    String
+  status        String
+  mappedOrderId String?          @db.Uuid
+  payload       Json             @default("{}")
+  createdAt     DateTime         @default(now())
+
+  @@unique([platform, externalId])
+  @@map("delivery_orders")
+}
+
+model Device {
+  id         String     @id @default(uuid()) @db.Uuid
+  locationId String     @db.Uuid
+  type       DeviceType
+  name       String
+  status     String     @default("offline")
+  config     Json       @default("{}")
+  location   Location   @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@index([locationId])
+  @@map("devices")
+}
+
+// Idempotency ledger for upward sync (ADR-004). The entityId is the till's
+// client-generated UUID; seeing it twice is a no-op.
+model ProcessedSyncItem {
+  entityId   String     @id @db.Uuid
+  entity     SyncEntity
+  deviceId   String
+  locationId String     @db.Uuid
+  payload    Json
+  receivedAt DateTime   @default(now())
+
+  @@index([locationId, receivedAt])
+  @@map("processed_sync_items")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  actorId   String?  @db.Uuid
+  action    String
+  entity    String
+  before    Json?
+  after     Json?
+  createdAt DateTime @default(now())
+  actor     Staff?   @relation(fields: [actorId], references: [id])
+
+  @@index([entity, createdAt])
+  @@map("audit_logs")
+}

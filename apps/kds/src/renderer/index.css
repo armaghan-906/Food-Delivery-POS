@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    /* Wall-mounted kiosk — no accidental selection or context menu. */
+    -webkit-user-select: none;
+    user-select: none;
+    overscroll-behavior: none;
+    background-color: #0b1220;
+    color: #e2e8f0;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+      system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}

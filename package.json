@@ -10,21 +10,25 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "terminal": "pnpm --filter @pos/terminal dev",
-    "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
-    "lint": "pnpm -r lint",
+    "kds": "pnpm --filter @pos/kds dev",
+    "backend": "pnpm --filter @pos/backend start:dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
     "rebuild:native": "node scripts/rebuild-native.mjs",
     "postinstall": "node scripts/rebuild-native.mjs"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.2",
     "@types/node": "^22.20.1",
+    "turbo": "^2.3.4",
     "typescript": "^5.7.3"
   },
   "pnpm": {
     "overrides": {
-      "vite": "^7.3.6"
+      "vite": "^7.3.6",
+      "jiti": "^2.7.0"
     }
   }
 }
