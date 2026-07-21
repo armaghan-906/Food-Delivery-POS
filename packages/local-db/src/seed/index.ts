@@ -2,8 +2,10 @@ import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { hashPin } from '../auth/pin.js';
 import { SEED_CATEGORIES, SEED_MODIFIER_GROUPS } from './menu.js';
+import { SEED_TABLES } from './tables.js';
 
 export * from './menu.js';
+export * from './tables.js';
 
 /**
  * Development seed data.
@@ -50,6 +52,52 @@ export interface SeedResult {
   allergenTags: number;
   staff: number;
   skipped: boolean;
+}
+
+/**
+ * Seed the floor-plan tables. Independent and idempotent — inserts only when the
+ * table is empty — so it can run on every dev boot, including on databases whose
+ * menu was seeded before the floor plan existed.
+ */
+export function seedTables(sqlite: Database.Database): { tables: number; skipped: boolean } {
+  const existing = sqlite.prepare('SELECT COUNT(*) AS n FROM dining_tables').get() as {
+    n: number;
+  };
+  if (existing.n > 0) return { tables: 0, skipped: true };
+
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const stmt = sqlite.prepare(
+    `INSERT INTO dining_tables
+       (id, location_id, area, number, seats, shape, pos_x, pos_y, status, covers, seated_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  const insert = sqlite.transaction(() => {
+    for (const t of SEED_TABLES) {
+      const seatedAt =
+        t.seatedMinutesAgo === null
+          ? null
+          : new Date(now - t.seatedMinutesAgo * 60_000).toISOString();
+      stmt.run(
+        t.id,
+        SEED_LOCATION.id,
+        t.area,
+        t.number,
+        t.seats,
+        t.shape,
+        t.posX,
+        t.posY,
+        t.status,
+        t.covers,
+        seatedAt,
+        nowIso,
+      );
+    }
+  });
+  insert();
+
+  return { tables: SEED_TABLES.length, skipped: false };
 }
 
 export async function seedDatabase(sqlite: Database.Database): Promise<SeedResult> {

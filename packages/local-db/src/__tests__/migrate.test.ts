@@ -6,10 +6,10 @@ function freshDb() {
 }
 
 describe('migrations', () => {
-  it('applies the initial schema', () => {
+  it('applies all migrations in order', () => {
     const { sqlite, applied } = freshDb();
-    expect(applied).toEqual([1]);
-    expect(currentVersion(sqlite)).toBe(1);
+    expect(applied).toEqual([1, 2]);
+    expect(currentVersion(sqlite)).toBe(2);
   });
 
   it('is idempotent — re-running applies nothing', () => {
@@ -29,6 +29,7 @@ describe('migrations', () => {
       'menu_item_modifier_groups', 'allergen_tags', 'staff', 'shifts',
       'cash_movements', 'orders', 'order_lines', 'order_events', 'payments',
       'sync_queue', 'device_state', 'inventory_items', 'stock_movements',
+      'dining_tables',
     ]) {
       expect(names, `missing table: ${table}`).toContain(table);
     }

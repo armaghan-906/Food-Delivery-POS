@@ -4,6 +4,9 @@ export { MIGRATIONS } from './migrations/index.js';
 export * from './auth/index.js';
 export * from './seed/index.js';
 export * from './outbox/repository.js';
+export * from './staff-repo.js';
+export * from './tables-repo.js';
+export * from './shifts-repo.js';
 
 import { openDatabase, type OpenDbOptions, type PosDatabase } from './client.js';
 import { runMigrations } from './migrate.js';
